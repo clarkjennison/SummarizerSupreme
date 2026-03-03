@@ -1,0 +1,177 @@
+"""
+email_sender.py
+Converts the markdown summary into a styled HTML email and sends it via
+the Gmail API.
+"""
+
+import base64
+import re
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+import pytz
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def send_summary_email(
+    service,
+    from_email: str,
+    to_email: str,
+    summary_markdown: str,
+    timezone_str: str = "America/New_York",
+) -> None:
+    """Build and send the daily digest email."""
+    tz    = pytz.timezone(timezone_str)
+    today = datetime.now(tz).strftime("%A, %B %d, %Y")
+
+    subject = f"Daily Summary — {today}"
+
+    html_body = _markdown_to_html(summary_markdown, today)
+    text_body = summary_markdown   # plain-text fallback
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = from_email
+    msg["To"]      = to_email
+
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html",  "utf-8"))
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+    service.users().messages().send(userId="me", body={"raw": raw}).execute()
+
+    print(f"  Summary email sent → {to_email}")
+
+
+# ---------------------------------------------------------------------------
+# Markdown → HTML conversion
+# ---------------------------------------------------------------------------
+
+def _markdown_to_html(md: str, date_str: str) -> str:
+    """
+    A lightweight markdown-to-HTML converter tailored to the digest format.
+    Handles: ## headings, bullet lists, bold, italic, horizontal rules, paragraphs.
+    """
+    lines    = md.split("\n")
+    html     = []
+    in_list  = False
+
+    for line in lines:
+        stripped = line.rstrip()
+
+        # Close open list before any non-list line
+        if in_list and not stripped.startswith("- ") and not stripped.startswith("* "):
+            html.append("</ul>")
+            in_list = False
+
+        if stripped.startswith("## "):
+            heading_text = stripped[3:].strip()
+            # Pick accent colour based on emoji / content
+            colour = _heading_colour(heading_text)
+            html.append(
+                f'<h2 style="margin:28px 0 8px;padding-bottom:6px;'
+                f'border-bottom:2px solid {colour};color:{colour};">'
+                f"{_inline_md(heading_text)}</h2>"
+            )
+
+        elif stripped.startswith("### "):
+            html.append(
+                f'<h3 style="margin:16px 0 4px;color:#444;">'
+                f"{_inline_md(stripped[4:].strip())}</h3>"
+            )
+
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            if not in_list:
+                html.append('<ul style="margin:4px 0 4px 20px;padding:0;">')
+                in_list = True
+            item = stripped[2:].strip()
+            html.append(f'<li style="margin:3px 0;">{_inline_md(item)}</li>')
+
+        elif stripped == "---":
+            html.append('<hr style="border:none;border-top:1px solid #eee;margin:16px 0;">')
+
+        elif stripped == "":
+            html.append('<div style="height:6px;"></div>')
+
+        else:
+            html.append(f'<p style="margin:4px 0;">{_inline_md(stripped)}</p>')
+
+    if in_list:
+        html.append("</ul>")
+
+    body_content = "\n".join(html)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Daily Summary</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f7;padding:32px 0;">
+    <tr><td align="center">
+      <table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;">
+
+        <!-- Header -->
+        <tr>
+          <td style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);
+                     border-radius:10px 10px 0 0;padding:28px 32px;">
+            <p style="margin:0;color:rgba(255,255,255,0.75);font-size:13px;
+                      text-transform:uppercase;letter-spacing:1px;">Daily Digest</p>
+            <h1 style="margin:6px 0 0;color:#fff;font-size:24px;font-weight:700;">
+              {date_str}
+            </h1>
+          </td>
+        </tr>
+
+        <!-- Body -->
+        <tr>
+          <td style="background:#fff;padding:28px 32px;border-radius:0 0 10px 10px;
+                     box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+            {body_content}
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="padding:20px 0;text-align:center;color:#aaa;font-size:12px;">
+            Generated by Daily Summary Bot &bull; Powered by Claude AI
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+
+def _heading_colour(text: str) -> str:
+    """Pick an accent colour based on the emoji/content of the heading."""
+    if "🔴" in text or "Action" in text:
+        return "#dc2626"   # red
+    if "🟡" in text or "FYI" in text or "Important" in text:
+        return "#d97706"   # amber
+    if "💬" in text or "Conversation" in text:
+        return "#2563eb"   # blue
+    if "📊" in text or "Glance" in text or "Stat" in text:
+        return "#059669"   # green
+    return "#4f46e5"       # indigo (default)
+
+
+def _inline_md(text: str) -> str:
+    """Convert inline markdown (bold, italic, code, links) to HTML."""
+    # Bold: **text** or __text__
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"__(.+?)__",     r"<strong>\1</strong>", text)
+    # Italic: *text* or _text_
+    text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
+    text = re.sub(r"_(.+?)_",   r"<em>\1</em>", text)
+    # Inline code
+    text = re.sub(r"`(.+?)`", r'<code style="background:#f3f4f6;padding:1px 4px;border-radius:3px;">\1</code>', text)
+    return text
