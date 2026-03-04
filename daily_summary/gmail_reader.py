@@ -14,10 +14,11 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-# Scopes needed: read emails + send the summary email
+# Scopes needed: read emails + send the summary email + read calendar
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/calendar.readonly",
 ]
 
 # Senders to skip even if not caught by Gmail's filters
@@ -214,6 +215,94 @@ def get_week_emails(service, user_email: str, timezone_str: str = "America/New_Y
                 "date":      date_raw,
                 "snippet":   snippet,
                 "body":      body[:800],   # shorter cap for weekly volume
+                "is_direct": is_direct,
+                "is_sent":   is_sent,
+                "labels":    list(label_ids),
+            })
+
+        except Exception as e:
+            print(f"  Warning: could not parse email {stub['id']}: {e}")
+            continue
+
+    return emails
+
+
+def get_last_week_emails(service, user_email: str, timezone_str: str = "America/New_York") -> list[dict]:
+    """
+    Fetch all non-automated emails from LAST week (the Mon–Sun before this week).
+    Used by the Monday morning briefing to provide prior-week email context.
+
+    Returns the same structure as get_today_emails / get_week_emails.
+    """
+    tz = pytz.timezone(timezone_str)
+    now = datetime.now(tz)
+
+    # Last Monday = this Monday minus 7 days
+    this_monday = now - timedelta(days=now.weekday())
+    last_monday = this_monday - timedelta(days=7)
+    last_sunday = this_monday - timedelta(days=1)
+
+    after_str  = last_monday.strftime("%Y/%m/%d")
+    before_str = last_sunday.strftime("%Y/%m/%d")
+
+    query = (
+        f"after:{after_str} before:{before_str} "
+        "-category:promotions "
+        "-category:social "
+        "-category:updates "
+        "-in:spam "
+        "-in:trash"
+    )
+
+    try:
+        result = service.users().messages().list(
+            userId="me", q=query, maxResults=500
+        ).execute()
+    except Exception as e:
+        print(f"  Gmail API error listing last-week messages: {e}")
+        return []
+
+    message_stubs = result.get("messages", [])
+    emails = []
+
+    for stub in message_stubs:
+        try:
+            msg = service.users().messages().get(
+                userId="me", id=stub["id"], format="full"
+            ).execute()
+
+            label_ids = set(msg.get("labelIds", []))
+            if label_ids & SKIP_LABELS:
+                continue
+
+            headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
+
+            subject  = headers.get("Subject", "(no subject)")
+            from_raw = headers.get("From", "")
+            to_raw   = headers.get("To", "")
+            cc_raw   = headers.get("Cc", "")
+            date_raw = headers.get("Date", "")
+
+            _, from_email = parseaddr(from_raw)
+
+            if any(skip in from_email.lower() for skip in SKIP_SENDERS):
+                continue
+
+            is_sent   = from_email.lower() == user_email.lower()
+            is_direct = user_email.lower() in to_raw.lower()
+
+            snippet = msg.get("snippet", "")
+            body    = _extract_plain_text(msg["payload"]) or snippet
+
+            emails.append({
+                "id":        stub["id"],
+                "subject":   subject,
+                "from":      from_raw,
+                "to":        to_raw,
+                "cc":        cc_raw,
+                "date":      date_raw,
+                "snippet":   snippet,
+                "body":      body[:600],   # short cap — context only
                 "is_direct": is_direct,
                 "is_sent":   is_sent,
                 "labels":    list(label_ids),

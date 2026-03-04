@@ -8,8 +8,10 @@ and emails a structured digest via Windows Task Scheduler.
 Usage:
     python main.py             # Daily digest (runs Mon-Fri at 5:30 PM)
     python main.py --weekly    # Weekly wrap-up (runs Fridays at 5:31 PM)
+    python main.py --monday    # Monday 8 AM calendar + week-ahead briefing
     python main.py --test      # Dry run — prints to console, no email sent
     python main.py --weekly --test  # Weekly dry run
+    python main.py --monday --test  # Monday briefing dry run
     python main.py --auth      # Run OAuth flows only (first-time setup)
 """
 
@@ -17,6 +19,10 @@ import argparse
 import os
 import sys
 import traceback
+
+# Ensure emoji and non-ASCII characters print cleanly on Windows console
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from dotenv import load_dotenv
 
@@ -199,6 +205,111 @@ def run(dry_run: bool = False) -> None:
     print("\nDone!")
 
 
+def run_monday_briefing(dry_run: bool = False) -> None:
+    """Monday 8 AM entry point — calendar + last week context = week-ahead briefing."""
+    from gmail_reader  import get_gmail_service, get_last_week_emails
+    from slack_reader  import get_week_slack_messages
+    from calendar_reader import get_calendar_service, get_week_ahead_events, format_events_for_claude
+    from summarizer    import (
+        format_emails_for_claude_lastweek,
+        format_slack_for_claude_weekly,
+        summarize_monday_briefing_with_claude,
+    )
+    from email_sender  import send_summary_email
+    from datetime      import datetime, timedelta
+    import pytz
+
+    anthropic_key    = _require_env("ANTHROPIC_API_KEY")
+    slack_token      = os.getenv("SLACK_USER_TOKEN", "").strip()
+    credentials_file = os.getenv("GMAIL_CREDENTIALS_FILE", os.path.join(_HERE, "credentials.json"))
+    token_file       = os.getenv("GMAIL_TOKEN_FILE",       os.path.join(_HERE, "token.json"))
+    from_email       = _require_env("SUMMARY_FROM_EMAIL")
+    to_email         = _require_env("SUMMARY_TO_EMAIL")
+    timezone         = os.getenv("TIMEZONE", "America/New_York")
+
+    print("[1/5] Authenticating with Gmail & Calendar...")
+    try:
+        gmail_service    = get_gmail_service(credentials_file, token_file)
+        calendar_service = get_calendar_service(credentials_file, token_file)
+    except FileNotFoundError as e:
+        print(f"\nERROR: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nERROR: Authentication failed -- {e}")
+        import traceback; traceback.print_exc()
+        sys.exit(1)
+
+    print("[2/5] Fetching this week's calendar events...")
+    try:
+        events = get_week_ahead_events(calendar_service, timezone)
+        tz = pytz.timezone(timezone)
+        now = datetime.now(tz)
+        week_end = now + timedelta(days=4)
+        print(f"       {len(events)} events found "
+              f"({now.strftime('%b %d')} - {week_end.strftime('%b %d')})")
+    except Exception as e:
+        print(f"  Warning: could not fetch calendar events -- {e}")
+        events = []
+
+    print("[3/5] Fetching last week's emails for context...")
+    try:
+        last_week_emails = get_last_week_emails(gmail_service, from_email, timezone)
+        received = [e for e in last_week_emails if not e["is_sent"]]
+        print(f"       {len(received)} received last week")
+    except Exception as e:
+        print(f"  Warning: could not fetch last-week emails -- {e}")
+        last_week_emails = []
+
+    print("[4/5] Fetching last week's Slack messages...")
+    slack_messages: list[dict] = []
+    slack_user_id = ""
+    if not slack_token:
+        print("  Skipping Slack (SLACK_USER_TOKEN not set).")
+    else:
+        try:
+            slack_messages, slack_user_id = get_week_slack_messages(slack_token, timezone)
+            mentions = sum(1 for m in slack_messages if m["is_mention"])
+            print(f"       {len(slack_messages)} messages, {mentions} @mentions")
+        except Exception as e:
+            print(f"  Warning: could not fetch Slack messages -- {e}")
+
+    print("[5/5] Generating Monday briefing with Claude...")
+    calendar_text       = format_events_for_claude(events)
+    last_week_email_txt = format_emails_for_claude_lastweek(last_week_emails)
+    last_week_slack_txt = format_slack_for_claude_weekly(slack_messages, slack_user_id)
+
+    try:
+        import traceback as _tb
+        summary = summarize_monday_briefing_with_claude(
+            calendar_text, last_week_email_txt, last_week_slack_txt,
+            anthropic_key, from_email, timezone,
+        )
+    except Exception as e:
+        print(f"\nERROR: Claude summarization failed -- {e}")
+        import traceback; traceback.print_exc()
+        sys.exit(1)
+
+    if dry_run:
+        print("\n" + "=" * 60)
+        print("DRY RUN -- Monday Briefing (would be emailed):")
+        print("=" * 60)
+        print(summary)
+        print("=" * 60)
+        print("\nDry run complete. No email was sent.")
+    else:
+        try:
+            send_summary_email(
+                gmail_service, from_email, to_email, summary, timezone,
+                subject_prefix="Monday Briefing",
+            )
+        except Exception as e:
+            print(f"\nERROR: Failed to send email -- {e}")
+            import traceback; traceback.print_exc()
+            sys.exit(1)
+
+    print("\nDone!")
+
+
 def auth_only() -> None:
     """Run OAuth flows so credentials are cached before the first scheduled run."""
     from gmail_reader import get_gmail_service
@@ -236,10 +347,16 @@ def main() -> None:
         "--auth", action="store_true",
         help="Run OAuth flows only (first-time setup)"
     )
+    parser.add_argument(
+        "--monday", action="store_true",
+        help="Run the Monday morning calendar + week-ahead briefing"
+    )
     args = parser.parse_args()
 
     if args.auth:
         auth_only()
+    elif args.monday:
+        run_monday_briefing(dry_run=args.test)
     elif args.weekly:
         run_weekly(dry_run=args.test)
     else:

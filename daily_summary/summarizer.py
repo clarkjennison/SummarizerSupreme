@@ -4,7 +4,7 @@ Formats email and Slack data and asks Claude to produce a prioritized
 daily digest summary.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import anthropic
 
@@ -338,6 +338,134 @@ Keep bullet points tight. No long prose paragraphs. This should take 2 minutes t
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=3000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    return response.content[0].text
+
+
+# ---------------------------------------------------------------------------
+# Monday morning calendar briefing
+# ---------------------------------------------------------------------------
+
+def format_emails_for_claude_lastweek(emails: list[dict]) -> str:
+    """Render last week's emails as a brief context block for the Monday prompt."""
+    if not emails:
+        return "No significant emails from last week."
+
+    received = [e for e in emails if not e["is_sent"]]
+    sent     = [e for e in emails if e["is_sent"]]
+
+    lines = [f"=== LAST WEEK'S EMAILS: {len(received)} received, {len(sent)} sent ===\n"]
+
+    for i, e in enumerate(received, 1):
+        priority_tag = "[DIRECT TO YOU]" if e["is_direct"] else "[CC/BCC]"
+        lines.append(
+            f"--- Email {i} {priority_tag} ---\n"
+            f"From:    {e['from']}\n"
+            f"Date:    {e['date']}\n"
+            f"Subject: {e['subject']}\n"
+            f"Snippet: {e['body'][:400]}\n"
+        )
+
+    full_text = "\n".join(lines)
+    if len(full_text) > MAX_EMAIL_CHARS:
+        full_text = full_text[:MAX_EMAIL_CHARS] + "\n\n[... additional emails truncated ...]"
+    return full_text
+
+
+def summarize_monday_briefing_with_claude(
+    calendar_text: str,
+    last_week_emails_text: str,
+    last_week_slack_text: str,
+    api_key: str,
+    user_email: str,
+    timezone_str: str = "America/New_York",
+) -> str:
+    """
+    Call Claude to produce a Monday morning briefing that covers:
+    - The week ahead (calendar)
+    - Carry-overs and context from last week (email + Slack)
+    - A skeleton of top priorities for the week
+    Returns the briefing as a markdown string.
+    """
+    client = anthropic.Anthropic(api_key=api_key)
+
+    tz    = pytz.timezone(timezone_str)
+    now   = datetime.now(tz)
+    today = now.strftime("%A, %B %d, %Y")
+
+    # Date range for the upcoming week (Mon-Fri)
+    week_end = now + timedelta(days=4)
+    week_range = f"{now.strftime('%B %d')} - {week_end.strftime('%B %d, %Y')}"
+
+    prompt = f"""You are an expert executive assistant preparing a Monday morning briefing \
+for {user_email}. Today is {today}. The week ahead is {week_range}.
+
+Your job is to set the user up for a great week. Be strategic, concise, and forward-looking.
+
+PRIORITY HIERARCHY — flag these people/topics prominently throughout:
+1. URGENT (🚨): Any communication or meeting involving Brett Shaheen
+2. HIGH: Investor meetings, investor requests for information, investor-related prep
+3. HIGH: Redesign Health department leaders — especially Sam Lynch and other senior RH leaders
+4. HIGH: Nathan Mapp
+5. ELEVATED (⏰): Time-sensitive transactions, approaching deadlines, deal timing
+
+---
+UPCOMING WEEK CALENDAR:
+{calendar_text}
+
+---
+LAST WEEK'S EMAIL CONTEXT (for carry-overs and pending threads):
+{last_week_emails_text}
+
+---
+LAST WEEK'S SLACK CONTEXT:
+{last_week_slack_text}
+
+---
+
+Produce the Monday briefing using EXACTLY this structure (use markdown):
+
+## 📅 Week Ahead — {week_range}
+List every meeting or event from the calendar, grouped by day. For each meeting, note:
+- What it is and who is involved
+- Whether it likely requires preparation (and what kind)
+Flag with 🚨 any meetings with Brett Shaheen or investor-related meetings.
+Flag with ⏰ any meetings tied to deal timelines or deadlines.
+If no events, write: *No calendar events found for this week.*
+
+## 🎯 Top Priorities This Week
+A numbered list of 3–6 concrete priorities the user should focus on this week, \
+based on the calendar AND the carry-overs from last week. Think strategically: \
+what actually moves the needle? Priority contacts and time-sensitive deals go first.
+Label each with the relevant person/deal name.
+
+## 📋 Prep Required
+For each meeting that requires preparation (especially investor meetings, \
+Brett Shaheen meetings, or board/leadership meetings), provide a brief prep checklist:
+- What materials or data to pull together
+- What questions or asks to anticipate
+- Any open threads from last week that are relevant
+If no prep is needed, write: *No significant prep required this week.*
+
+## 🔁 Carry-Overs from Last Week
+Unresolved threads, pending responses, or open items from last week that need \
+attention this week. Priority contacts first. Include WHO it involves and WHAT is needed.
+If nothing is outstanding, write: *Clean slate — no carry-overs.*
+
+## 📊 Week at a Glance
+- Meetings this week: X
+- Meetings requiring prep: X
+- Carry-overs from last week: X
+- Top priority contact this week: [name or "None flagged"]
+
+Keep everything tight and scannable. This should take 3 minutes to read and \
+leave the user ready to attack the week."""
+
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=3500,
         messages=[{"role": "user", "content": prompt}],
     )
 
