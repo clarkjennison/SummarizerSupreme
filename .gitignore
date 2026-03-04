@@ -1,0 +1,17 @@
+# Credentials — never commit these
+daily_summary/.env
+daily_summary/credentials.json
+daily_summary/token.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+daily_summary/venv/
+
+# Claude internal
+.claude/
+
+# Logs
+daily_summary/logs/

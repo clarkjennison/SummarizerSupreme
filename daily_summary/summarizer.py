@@ -11,7 +11,7 @@ import anthropic
 # Model to use for summarization.
 # claude-3-5-haiku is cost-effective for a daily task (~$0.01–$0.05/day).
 # Swap for claude-3-5-sonnet or claude-opus-4-5 for higher quality.
-CLAUDE_MODEL = "claude-3-5-haiku-20241022"
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 # Hard cap on tokens sent to Claude to avoid huge bills on busy days
 MAX_EMAIL_CHARS  = 40_000
@@ -111,6 +111,19 @@ The user's email address is {user_email}.
 Your task: review all of today's email and Slack activity below and produce a \
 clear, scannable daily digest. Be concise — the user wants to catch up quickly.
 
+PRIORITY HIERARCHY — surface and escalate these first, in this order:
+1. URGENT: Any communication from Brett Shaheen — always treat as top priority regardless of topic
+2. HIGH: Investors requesting information, data, or updates
+3. HIGH: Communications from Redesign Health department leaders — especially Sam Lynch, \
+but also any other department heads or senior leaders at Redesign Health
+4. HIGH: Any communication from Nathan Mapp
+5. ELEVATED: Any message — email or Slack — related to transactions that are time-sensitive, \
+have approaching deadlines, require sign-off, or involve deal timing
+
+When listing items in Action Required or Important FYI, always place the above priority \
+contacts and topics at the top of each section, labeled with 🚨 if from Brett Shaheen \
+or ⏰ if time-sensitive/deadline-driven.
+
 Focus on:
 - Messages that require a response or action from the user
 - Important decisions, updates, or information the user should know
@@ -135,12 +148,15 @@ Produce the digest using EXACTLY this structure (use markdown):
 
 ## 🔴 Action Required
 Items where the user must respond or do something. For each, include WHO sent it, \
-WHAT they need, and WHICH channel (email/Slack channel name).
+WHAT they need, and WHICH channel (email/Slack channel name). \
+Priority contacts (Brett Shaheen, investors, Sam Lynch, Redesign Health leaders, Nathan Mapp) \
+and time-sensitive transactions must appear first with appropriate emoji labels.
 If nothing requires action, write: *Nothing requires action today.*
 
 ## 🟡 Important — FYI
 Key information the user should be aware of but doesn't need to act on right now. \
-Decisions made, important news, things that affect the user.
+Decisions made, important news, things that affect the user. \
+Apply the same priority ordering — priority contacts and deadline-sensitive items first.
 If nothing notable, write: *No important FYIs today.*
 
 ## 💬 Notable Conversations

@@ -44,7 +44,7 @@ def send_summary_email(
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
     service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
-    print(f"  Summary email sent → {to_email}")
+    print(f"  Summary email sent -> {to_email}")
 
 
 # ---------------------------------------------------------------------------

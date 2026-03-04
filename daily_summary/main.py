@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 # Load .env from the same directory as this script
 _HERE = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(_HERE, ".env"))
+load_dotenv(os.path.join(_HERE, ".env"), override=True)
 
 
 def _require_env(key: str) -> str:
