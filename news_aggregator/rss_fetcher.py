@@ -18,30 +18,31 @@ import urllib.error
 #   tier 1 = must-read  |  tier 2 = good signal  |  tier 3 = supplemental
 # ---------------------------------------------------------------------------
 FEEDS = [
-    # Tier 1 — Core healthcare VC / startup news
-    ("https://www.statnews.com/feed/",                                 "STAT News",              1),
-    ("https://medcitynews.com/feed/",                                  "MedCity News",           1),
-    ("https://endpts.com/feed/",                                       "Endpoints News",         1),
+    # Tier 1 — Digital health & healthtech VC (primary focus)
     ("https://rockhealth.com/feed/",                                   "Rock Health",            1),
-    ("https://techcrunch.com/category/health/feed/",                   "TechCrunch Health",      1),
+    ("https://medcitynews.com/feed/",                                  "MedCity News",           1),
+    ("https://hitconsultant.net/feed/",                                "HIT Consultant",         1),
+    ("https://www.healthcaredive.com/feeds/news/",                     "Healthcare Dive",        1),
+    ("https://techcrunch.com/tag/health/feed/",                        "TechCrunch Health",      1),
+    ("https://mhealthintelligence.com/feed",                           "mHealth Intelligence",   1),
+    ("https://www.healthcareitnews.com/rss.xml",                       "Healthcare IT News",     1),
 
-    # Tier 2 — Broader healthcare / life sciences
+    # Tier 2 — Broad healthcare news with significant digital health coverage
+    ("https://www.statnews.com/feed/",                                 "STAT News",              2),
     ("https://www.fiercehealthcare.com/rss/xml",                       "Fierce Healthcare",      2),
-    ("https://www.biopharmadive.com/feeds/news/",                      "BioPharma Dive",         2),
-    ("https://www.healthcarefinancenews.com/rss.xml",                  "Healthcare Finance News", 2),
-    ("https://www.modernhealthcare.com/rss",                           "Modern Healthcare",      2),
-    ("https://hitconsultant.net/feed/",                                "HIT Consultant",         2),
-    ("https://www.healthcaredive.com/feeds/news/",                     "Healthcare Dive",        2),
-    ("https://www.beckershospitalreview.com/rss/all-topics.xml",       "Becker's Hospital Review", 2),
+    ("https://www.modernhealthcare.com/section/hospitals/rss",         "Modern Healthcare",      2),
+    ("https://www.beckershospitalreview.com/rss/all-topics",           "Becker's Hospital Review", 2),
 
-    # Tier 3 — Policy, broader VC / startup ecosystem
-    ("https://www.healthaffairs.org/rss/",                             "Health Affairs",         3),
+    # Tier 3 — Pharma / biotech / broader VC (supplemental; still included, lower priority)
+    ("https://endpts.com/feed/",                                       "Endpoints News",         3),
+    ("https://www.biopharmadive.com/feeds/news/",                      "BioPharma Dive",         3),
+    ("https://www.fiercebiotech.com/rss/xml",                          "Fierce Biotech",         3),
     ("https://news.crunchbase.com/feed/",                              "Crunchbase News",        3),
-    ("https://vcnewsdaily.com/feed/",                                  "VC News Daily",          3),
     ("https://techcrunch.com/category/venture/feed/",                  "TechCrunch Venture",     3),
+    ("https://www.axios.com/feeds/feed.rss",                           "Axios",                  3),
 ]
 
-# Keywords that strongly indicate an article is relevant to healthcare VC
+# Keywords that flag an article as directly relevant to healthtech / healthcare VC
 RELEVANCE_KEYWORDS = [
     # Funding events
     "raises", "raised", "funding", "fundraise", "series a", "series b", "series c",
@@ -53,10 +54,30 @@ RELEVANCE_KEYWORDS = [
     # Fund-level
     "new fund", "fund launch", "lp", "gp", "limited partner", "general partner",
     "closes fund", "fund close", "fund raise",
-    # Healthcare / digital health
-    "digital health", "health tech", "healthtech", "medtech", "biotech",
-    "healthcare startup", "health startup", "clinical", "therapeutics",
-    "telehealth", "telemedicine", "ai health", "health ai",
+    # Digital health / healthtech (primary focus)
+    "digital health", "health tech", "healthtech", "health it", "health information",
+    "healthcare startup", "health startup", "telehealth", "telemedicine",
+    "remote patient monitoring", "rpm", "virtual care", "care navigation",
+    "ai health", "health ai", "clinical ai", "ambient ai", "ambient documentation",
+    "ehr", "emr", "electronic health", "interoperability", "health data",
+    "value-based care", "vbc", "population health", "care management",
+    "mental health app", "behavioral health tech", "digital therapeutics", "dtx",
+    "wearable", "connected health", "patient engagement", "care coordination",
+    "revenue cycle", "rcm", "prior authorization", "claims automation",
+    # Medtech / devices (included)
+    "medtech", "medical device", "diagnostics", "point-of-care",
+    # Biotech / pharma (included at lower weight — Claude handles de-prioritization)
+    "biotech", "therapeutics", "clinical trial", "fda approval",
+]
+
+# Keywords that signal a story is primarily pharma/drug-focused.
+# Articles matching these (but not RELEVANCE_KEYWORDS) are tagged for Claude
+# to rank lower unless there is a clear VC / investment angle.
+PHARMA_SIGNALS = [
+    "phase 1", "phase 2", "phase 3", "nda filing", "bla filing", "pdufa",
+    "investigational new drug", "ind ", "clinical trial data", "trial results",
+    "drug approval", "drug candidate", "molecule", "compound", "antibody",
+    "biologics", "gene therapy", "cell therapy", "biosimilar", "oncology drug",
 ]
 
 
@@ -183,8 +204,9 @@ def _parse_item(item, source: str, tier: int, is_atom: bool, ns: dict) -> Option
         "published_dt": pub_dt,
         "published_ts": pub_dt.timestamp(),
         "published_str": pub_dt.strftime("%b %d, %I:%M %p UTC"),
-        "categories":   cats,
-        "is_relevant":  _is_relevant(title, summary),
+        "categories":    cats,
+        "is_relevant":   _is_relevant(title, summary),
+        "is_pharma_only": _is_pharma_only(title, summary),
     }
 
 
@@ -192,6 +214,17 @@ def _is_relevant(title: str, summary: str) -> bool:
     """Quick keyword check to flag articles directly about healthcare VC."""
     text = (title + " " + summary).lower()
     return any(kw in text for kw in RELEVANCE_KEYWORDS)
+
+
+def _is_pharma_only(title: str, summary: str) -> bool:
+    """True if the article reads as primarily pharma/drug news with no clear investment angle."""
+    text = (title + " " + summary).lower()
+    has_pharma  = any(kw in text for kw in PHARMA_SIGNALS)
+    has_vc_hook = any(kw in text for kw in [
+        "raises", "raised", "funding", "acquires", "acquisition",
+        "venture", "investment", "ipo", "new fund", "startup",
+    ])
+    return has_pharma and not has_vc_hook
 
 
 def _parse_date(date_str: str) -> Optional[datetime]:

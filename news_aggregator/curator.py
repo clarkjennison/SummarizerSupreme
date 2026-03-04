@@ -9,7 +9,7 @@ from datetime import datetime
 import pytz
 import anthropic
 
-CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 # Hard cap on content sent to Claude
 MAX_ARTICLE_CHARS   = 50_000
@@ -60,10 +60,15 @@ def build_article_block(
         title   = item.get("title", "")
         url     = item.get("url", "")
         summary = item.get("summary", "")[:600]
-        relevant_flag = " [FUNDING/M&A]" if item.get("is_relevant") else ""
+        flags = []
+        if item.get("is_relevant"):
+            flags.append("FUNDING/M&A")
+        if item.get("is_pharma_only"):
+            flags.append("PHARMA-ONLY")
+        flag_str = f" [{', '.join(flags)}]" if flags else ""
 
         lines.append(
-            f"[{i}] {source} (tier {tier}){relevant_flag} | {pub}\n"
+            f"[{i}] {source} (tier {tier}){flag_str} | {pub}\n"
             f"Title:   {title}\n"
             f"URL:     {url}\n"
             f"Summary: {summary}\n"
@@ -111,32 +116,47 @@ def curate_with_claude(
     tz    = pytz.timezone(timezone_str)
     today = datetime.now(tz).strftime("%A, %B %d, %Y")
 
-    prompt = f"""You are a senior analyst at a top-tier healthcare venture capital firm. \
-Today is {today}. Your job is to review ALL of the raw articles and newsletter content below \
-and produce a crisp, high-signal daily news digest for a healthcare VC investor.
+    prompt = f"""You are a senior analyst at a top-tier healthcare venture capital firm \
+with a primary focus on digital health and healthtech. Today is {today}. \
+Your job is to review ALL of the raw articles and newsletter content below and produce \
+a crisp, high-signal daily news digest.
+
+FOCUS MANDATE — Digital health and healthtech are the PRIMARY lens:
+  → Digital health platforms, health IT, EHR/EMR, telehealth, virtual care, RPM
+  → AI in healthcare (clinical AI, ambient documentation, diagnostic AI, etc.)
+  → Value-based care enablement, care navigation, population health
+  → Behavioral / mental health technology
+  → Revenue cycle management, prior auth automation, healthcare payments
+  → Consumer health apps, wearables, connected health devices
+  → Health data, interoperability, and data infrastructure
+
+SECONDARY (include when investment-relevant, but do NOT crowd out digital health):
+  → Medtech / medical devices with a venture / startup angle
+  → Biotech / pharma ONLY when there is a clear VC investment event
+    (funding round, acquisition, new fund) — pure drug trial updates are low priority
 
 WHAT TO INCLUDE — in strict priority order:
-1. 💰 New funding rounds (Series A/B/C/D, seed, growth equity) in healthcare / digital health / biotech / medtech — especially rounds ≥ $20M
-2. 🏦 New VC / PE fund launches or closes (LP/GP level) focused on healthcare
-3. 🤝 M&A, acquisitions, or major strategic partnerships in the healthcare ecosystem
-4. 📈 IPO filings, SPAC deals, or secondary offerings by healthcare companies
-5. 🧠 Significant product launches, clinical trial results, or regulatory approvals with major commercial implications
-6. 🌐 Key market trends, policy changes, or macro signals that a healthcare VC investor must know today
+1. 💰 Funding rounds in digital health / healthtech (any size) or medtech/biotech ≥ $30M
+2. 🏦 New VC / PE fund launches or closes (LP/GP level) with healthcare or digital health focus
+3. 🤝 M&A, acquisitions, or major strategic partnerships with a digital health / healthtech angle
+4. 📈 IPO filings, SPAC deals, or secondary offerings by digital health or healthtech companies
+5. 🔬 Significant regulatory, clinical, or product milestones with clear commercial / VC implications
+6. 🌐 Key market trends, policy changes, or macro signals directly relevant to digital health investing
 
 WHAT TO SKIP:
-- General hospital / provider operations news with no investment angle
-- Incremental product updates from large incumbent health systems
+- Pure pharma drug trial updates with no funding / investment angle (tagged [PHARMA-ONLY])
+- General hospital / provider operations with no technology or investment angle
+- Incremental product updates from large incumbents (Epic, Cerner, etc.) unless strategic
 - Opinion pieces with no hard news
-- Duplicate stories (pick the best source, drop the rest)
-- Anything from yesterday that was already widely covered
+- Duplicate stories — pick the best source, drop the rest
 
 WRITING RULES:
-- One sentence max per item in the lists — pack maximum signal into minimum words
-- For funding rounds: always include company name, amount, round stage, lead investor (if known), and what the company does
-- For fund launches: always include fund name, GP, size, and focus
-- For M&A: always include acquirer, target, deal value (if disclosed), and strategic rationale in one line
-- Use hyperlinks (markdown format) for every item: [Title](URL)
-- No filler phrases like "In a sign of...", "It's worth noting...", "This comes as..."
+- One sentence max per bullet — pack maximum signal into minimum words
+- Funding rounds: company name, amount, stage, lead investor (if known), one-line description
+- Fund launches: fund name, GP, size, focus thesis
+- M&A: acquirer → target, deal value (or "undisclosed"), one-line strategic rationale
+- Hyperlink every item: [Company or Title](URL)
+- No filler: never write "In a sign of...", "It's worth noting...", "This comes as..."
 
 ---
 {article_block}
@@ -149,34 +169,35 @@ WRITING RULES:
 Produce the digest using EXACTLY this structure (markdown):
 
 ## 💰 Funding Rounds
-Bullet list of healthcare startup / biotech / medtech funding rounds announced today. \
-Each bullet = one round. Largest rounds first. Include amount, stage, lead investor, and \
-one-line description of what the company does. Use [Company Name](URL) format.
+Digital health and healthtech rounds first, then medtech, then biotech/pharma (only if ≥ $30M). \
+Largest rounds first within each category. One bullet per round: \
+[Company](URL) — amount, stage, lead investor, one-line description of what they do.
 If none: *No funding rounds found today.*
 
 ## 🏦 New Funds
-Bullet list of new VC, PE, or LP-level fund launches or closes focused on healthcare. \
-Include fund name, GP, target/final size, and investment thesis in one line.
+New VC, PE, or LP-level fund launches or closes with a healthcare or digital health focus. \
+Fund name, GP, size, investment thesis — one line each.
 If none: *No new fund announcements today.*
 
 ## 🤝 M&A & Partnerships
-Bullet list of acquisitions, mergers, and major strategic partnerships. \
-Include acquirer → target, deal value (or "undisclosed"), and one-line strategic rationale.
+Acquisitions, mergers, and major strategic partnerships — digital health and healthtech angle first. \
+Acquirer → target, deal value (or "undisclosed"), one-line strategic rationale.
 If none: *No M&A activity today.*
 
 ## 📈 IPOs & Public Markets
-Filings, SPAC transactions, secondary offerings, or notable public market moves \
-by healthcare / digital health companies.
+IPO filings, SPAC transactions, secondary offerings, or notable public market moves \
+by digital health or healthtech companies.
 If none: *No IPO or public market news today.*
 
 ## 🔬 Notable Clinical & Regulatory
-Significant FDA decisions, major clinical trial readouts, or breakthrough designations \
-with clear commercial / investment implications. Skip incremental updates.
+FDA decisions, product clearances, or clinical milestones with clear commercial implications. \
+Prioritize digital health / AI tool approvals. Include pharma only if the investment angle is major. \
+Skip pure drug trial updates.
 If none: *Nothing notable today.*
 
 ## 🌐 Ecosystem & Macro
-Key policy news, market reports, or big-picture trends a healthcare investor must know. \
-Max 3 bullets. Skip generic healthcare IT news.
+Policy, market research, or big-picture trends that directly affect digital health investing. \
+Max 3 bullets. Skip generic hospital IT or EHR-vendor noise.
 If none: *Nothing notable today.*
 
 ## 📊 Today at a Glance
