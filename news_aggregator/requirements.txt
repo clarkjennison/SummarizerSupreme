@@ -1,0 +1,8 @@
+anthropic>=0.40.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.130.0
+python-dotenv>=1.0.0
+pytz>=2024.1
+# feedparser is optional but gives better RSS parsing for edge-case feeds
+# feedparser>=6.0.11
