@@ -5,7 +5,7 @@ Handles Gmail OAuth authentication and fetches today's emails.
 
 import os
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.utils import parseaddr
 
 import pytz
@@ -134,6 +134,86 @@ def get_today_emails(service, user_email: str, timezone_str: str = "America/New_
                 "date":      date_raw,
                 "snippet":   snippet,
                 "body":      body[:3000],   # cap length sent to Claude
+                "is_direct": is_direct,
+                "is_sent":   is_sent,
+                "labels":    list(label_ids),
+            })
+
+        except Exception as e:
+            print(f"  Warning: could not parse email {stub['id']}: {e}")
+            continue
+
+    return emails
+
+
+def get_week_emails(service, user_email: str, timezone_str: str = "America/New_York") -> list[dict]:
+    """
+    Fetch all non-automated emails received this week (Monday through now).
+    Same structure as get_today_emails but covers the full Mon–Fri window.
+    """
+    tz = pytz.timezone(timezone_str)
+    now = datetime.now(tz)
+    monday = now - timedelta(days=now.weekday())
+    monday_str = monday.strftime("%Y/%m/%d")
+
+    query = (
+        f"after:{monday_str} "
+        "-category:promotions "
+        "-category:social "
+        "-category:updates "
+        "-in:spam "
+        "-in:trash"
+    )
+
+    try:
+        result = service.users().messages().list(
+            userId="me", q=query, maxResults=500
+        ).execute()
+    except Exception as e:
+        print(f"  Gmail API error listing messages: {e}")
+        return []
+
+    message_stubs = result.get("messages", [])
+    emails = []
+
+    for stub in message_stubs:
+        try:
+            msg = service.users().messages().get(
+                userId="me", id=stub["id"], format="full"
+            ).execute()
+
+            label_ids = set(msg.get("labelIds", []))
+            if label_ids & SKIP_LABELS:
+                continue
+
+            headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
+
+            subject  = headers.get("Subject", "(no subject)")
+            from_raw = headers.get("From", "")
+            to_raw   = headers.get("To", "")
+            cc_raw   = headers.get("Cc", "")
+            date_raw = headers.get("Date", "")
+
+            _, from_email = parseaddr(from_raw)
+
+            if any(skip in from_email.lower() for skip in SKIP_SENDERS):
+                continue
+
+            is_sent   = from_email.lower() == user_email.lower()
+            is_direct = user_email.lower() in to_raw.lower()
+
+            snippet = msg.get("snippet", "")
+            body    = _extract_plain_text(msg["payload"]) or snippet
+
+            emails.append({
+                "id":        stub["id"],
+                "subject":   subject,
+                "from":      from_raw,
+                "to":        to_raw,
+                "cc":        cc_raw,
+                "date":      date_raw,
+                "snippet":   snippet,
+                "body":      body[:800],   # shorter cap for weekly volume
                 "is_direct": is_direct,
                 "is_sent":   is_sent,
                 "labels":    list(label_ids),

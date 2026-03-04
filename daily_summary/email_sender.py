@@ -23,12 +23,13 @@ def send_summary_email(
     to_email: str,
     summary_markdown: str,
     timezone_str: str = "America/New_York",
+    subject_prefix: str = "Daily Summary",
 ) -> None:
     """Build and send the daily digest email."""
     tz    = pytz.timezone(timezone_str)
     today = datetime.now(tz).strftime("%A, %B %d, %Y")
 
-    subject = f"Daily Summary — {today}"
+    subject = f"{subject_prefix} — {today}"
 
     html_body = _markdown_to_html(summary_markdown, today)
     text_body = summary_markdown   # plain-text fallback

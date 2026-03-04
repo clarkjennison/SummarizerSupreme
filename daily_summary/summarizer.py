@@ -179,3 +179,166 @@ Keep bullet points tight. No long prose paragraphs."""
     )
 
     return response.content[0].text
+
+
+# ---------------------------------------------------------------------------
+# Weekly digest
+# ---------------------------------------------------------------------------
+
+def format_emails_for_claude_weekly(emails: list[dict]) -> str:
+    """Render a week's worth of emails into a plain-text block for Claude."""
+    if not emails:
+        return "No emails received this week."
+
+    received = [e for e in emails if not e["is_sent"]]
+    sent     = [e for e in emails if e["is_sent"]]
+
+    lines = [f"=== EMAILS THIS WEEK: {len(received)} received, {len(sent)} sent ===\n"]
+
+    for i, e in enumerate(received, 1):
+        priority_tag = "[DIRECT TO YOU]" if e["is_direct"] else "[CC/BCC]"
+        lines.append(
+            f"--- Email {i} {priority_tag} ---\n"
+            f"From:    {e['from']}\n"
+            f"Date:    {e['date']}\n"
+            f"Subject: {e['subject']}\n"
+            f"Snippet: {e['body'][:400]}\n"
+        )
+
+    full_text = "\n".join(lines)
+    if len(full_text) > MAX_EMAIL_CHARS:
+        full_text = full_text[:MAX_EMAIL_CHARS] + "\n\n[... additional emails truncated ...]"
+    return full_text
+
+
+def format_slack_for_claude_weekly(messages: list[dict], user_id: str) -> str:
+    """Render a week's worth of Slack messages into a plain-text block for Claude."""
+    if not messages:
+        return "No Slack messages this week."
+
+    channels: dict[str, list[dict]] = {}
+    for msg in messages:
+        channels.setdefault(msg["channel"], []).append(msg)
+
+    mention_count = sum(1 for m in messages if m["is_mention"])
+    dm_count      = sum(1 for m in messages if m["is_dm"])
+
+    lines = [
+        f"=== SLACK THIS WEEK: {len(messages)} messages across {len(channels)} conversations "
+        f"({mention_count} mentions of you, {dm_count} DM messages) ===\n"
+    ]
+
+    for channel, msgs in sorted(channels.items(), key=lambda kv: not kv[1][0]["is_dm"]):
+        msg_type = "DM" if msgs[0]["is_dm"] else ("Group DM" if msgs[0]["is_group_dm"] else "Channel")
+        lines.append(f"\n--- {msg_type}: {channel} ({len(msgs)} messages this week) ---")
+        for msg in msgs[:60]:
+            tags = []
+            if msg["is_mention"]:
+                tags.append("MENTIONED YOU")
+            if msg["is_from_user"]:
+                tags.append("YOU")
+            tag_str = f" [{', '.join(tags)}]" if tags else ""
+            lines.append(f"  {msg['time']} {msg['sender']}{tag_str}: {msg['text'][:300]}")
+            if msg["reply_count"] > 0:
+                lines.append(f"    -> {msg['reply_count']} replies in thread")
+
+    full_text = "\n".join(lines)
+    if len(full_text) > MAX_SLACK_CHARS:
+        full_text = full_text[:MAX_SLACK_CHARS] + "\n\n[... additional messages truncated ...]"
+    return full_text
+
+
+def summarize_week_with_claude(
+    emails_text: str,
+    slack_text: str,
+    api_key: str,
+    user_email: str,
+    timezone_str: str = "America/New_York",
+) -> str:
+    """
+    Call Claude to produce a structured weekly digest covering the full Mon-Fri window.
+    Returns the summary as a markdown string.
+    """
+    client = anthropic.Anthropic(api_key=api_key)
+
+    tz    = pytz.timezone(timezone_str)
+    now   = datetime.now(tz)
+    today = now.strftime("%A, %B %d, %Y")
+
+    prompt = f"""You are an expert executive assistant. Today is {today} (Friday). \
+The user's email address is {user_email}.
+
+Your task: review the FULL WEEK of email and Slack activity below and produce a \
+clear, strategic weekly digest. This is a Friday wrap-up — focus on the big picture, \
+not individual messages.
+
+PRIORITY HIERARCHY — surface and escalate these first, in this order:
+1. URGENT: Any communication from Brett Shaheen — always treat as top priority regardless of topic
+2. HIGH: Investors requesting information, data, or updates
+3. HIGH: Communications from Redesign Health department leaders — especially Sam Lynch, \
+but also any other department heads or senior leaders at Redesign Health
+4. HIGH: Any communication from Nathan Mapp
+5. ELEVATED: Any message — email or Slack — related to transactions that are time-sensitive, \
+have approaching deadlines, require sign-off, or involve deal timing
+
+When listing items, label with 🚨 if from Brett Shaheen or ⏰ if time-sensitive/deadline-driven. \
+Priority contacts and topics must appear first in each section.
+
+Focus on:
+- Unresolved action items that still need a response or follow-up
+- Important decisions that were made this week
+- Key themes and recurring topics across the week
+- Significant relationships/conversations with priority contacts
+- Anything that needs to carry over into next week
+
+Skip:
+- Automated notifications and system messages
+- Low-value chatter
+- Fully resolved threads with no follow-up needed
+
+---
+{emails_text}
+
+---
+{slack_text}
+
+---
+
+Produce the weekly digest using EXACTLY this structure (use markdown):
+
+## 🚨 Still Needs Your Attention
+Open items from this week that have NOT been resolved and require follow-up. \
+Priority contacts first. Include WHO it's from, WHAT is needed, and WHEN it came in.
+If nothing is outstanding, write: *No outstanding items — great week!*
+
+## ✅ Key Wins & Decisions This Week
+Important things that were accomplished, resolved, or decided this week. \
+Keep it high-level — what moved forward?
+If nothing notable, write: *No major decisions this week.*
+
+## 🔁 Carry Into Next Week
+Threads, relationships, or topics that need to continue next week. \
+Think of this as your Monday morning briefing prep.
+If nothing to carry over, write: *Clean slate heading into next week.*
+
+## 👥 Key People This Week
+Brief summary of notable activity from your priority contacts (Brett Shaheen, investors, \
+Sam Lynch / RH leaders, Nathan Mapp) and any other people who were especially active.
+If none of them were active, write: *No activity from priority contacts this week.*
+
+## 📊 Week at a Glance
+- Emails received: X (X direct, X CC'd)
+- Emails sent: X
+- Slack messages: X across X channels/DMs
+- Times @mentioned: X
+- Busiest day: [day]
+
+Keep bullet points tight. No long prose paragraphs. This should take 2 minutes to read."""
+
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=3000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    return response.content[0].text

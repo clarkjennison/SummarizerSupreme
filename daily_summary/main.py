@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Daily Summary Bot
-=================
-Fetches today's Gmail and Slack messages, summarizes them with Claude,
-and emails a structured digest to you at 5:30 PM ET (via Windows Task Scheduler).
+Daily & Weekly Summary Bot
+==========================
+Fetches Gmail and Slack messages, summarizes them with Claude,
+and emails a structured digest via Windows Task Scheduler.
 
 Usage:
-    python main.py           # Run once (intended to be called by Task Scheduler)
-    python main.py --test    # Dry run — prints summary to console, skips sending email
-    python main.py --auth    # Run OAuth flows only (first-time setup), then exit
+    python main.py             # Daily digest (runs Mon-Fri at 5:30 PM)
+    python main.py --weekly    # Weekly wrap-up (runs Fridays at 5:31 PM)
+    python main.py --test      # Dry run — prints to console, no email sent
+    python main.py --weekly --test  # Weekly dry run
+    python main.py --auth      # Run OAuth flows only (first-time setup)
 """
 
 import argparse
@@ -29,6 +31,86 @@ def _require_env(key: str) -> str:
         print(f"ERROR: {key} is not set in your .env file.")
         sys.exit(1)
     return val
+
+
+def run_weekly(dry_run: bool = False) -> None:
+    """Weekly entry point — fetch Mon-Fri data, summarize, send Friday wrap-up."""
+    from gmail_reader import get_gmail_service, get_week_emails
+    from slack_reader import get_week_slack_messages
+    from summarizer  import format_emails_for_claude_weekly, format_slack_for_claude_weekly, summarize_week_with_claude
+    from email_sender import send_summary_email
+
+    anthropic_key    = _require_env("ANTHROPIC_API_KEY")
+    slack_token      = os.getenv("SLACK_USER_TOKEN", "").strip()
+    credentials_file = os.getenv("GMAIL_CREDENTIALS_FILE", os.path.join(_HERE, "credentials.json"))
+    token_file       = os.getenv("GMAIL_TOKEN_FILE",       os.path.join(_HERE, "token.json"))
+    from_email       = _require_env("SUMMARY_FROM_EMAIL")
+    to_email         = _require_env("SUMMARY_TO_EMAIL")
+    timezone         = os.getenv("TIMEZONE", "America/New_York")
+
+    print("[1/4] Authenticating with Gmail...")
+    try:
+        gmail_service = get_gmail_service(credentials_file, token_file)
+    except FileNotFoundError as e:
+        print(f"\nERROR: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nERROR: Gmail authentication failed — {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+    print("[2/4] Fetching this week's emails...")
+    try:
+        emails = get_week_emails(gmail_service, from_email, timezone)
+        received = [e for e in emails if not e["is_sent"]]
+        print(f"       {len(received)} received, {len(emails) - len(received)} sent")
+    except Exception as e:
+        print(f"  Warning: could not fetch emails — {e}")
+        emails = []
+
+    print("[3/4] Fetching this week's Slack messages...")
+    slack_messages: list[dict] = []
+    slack_user_id = ""
+    if not slack_token:
+        print("  Skipping Slack (SLACK_USER_TOKEN not set).")
+    else:
+        try:
+            slack_messages, slack_user_id = get_week_slack_messages(slack_token, timezone)
+            mentions = sum(1 for m in slack_messages if m["is_mention"])
+            print(f"       {len(slack_messages)} messages, {mentions} @mentions")
+        except Exception as e:
+            print(f"  Warning: could not fetch Slack messages — {e}")
+
+    print("[4/4] Generating weekly summary with Claude...")
+    emails_text = format_emails_for_claude_weekly(emails)
+    slack_text  = format_slack_for_claude_weekly(slack_messages, slack_user_id)
+
+    try:
+        summary = summarize_week_with_claude(
+            emails_text, slack_text, anthropic_key, from_email, timezone
+        )
+    except Exception as e:
+        print(f"\nERROR: Claude summarization failed — {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+    if dry_run:
+        print("\n" + "=" * 60)
+        print("DRY RUN — Weekly Summary (would be emailed):")
+        print("=" * 60)
+        print(summary)
+        print("=" * 60)
+        print("\nDry run complete. No email was sent.")
+    else:
+        try:
+            send_summary_email(gmail_service, from_email, to_email, summary, timezone,
+                               subject_prefix="Weekly Wrap-Up")
+        except Exception as e:
+            print(f"\nERROR: Failed to send email — {e}")
+            traceback.print_exc()
+            sys.exit(1)
+
+    print("\nDone!")
 
 
 def run(dry_run: bool = False) -> None:
@@ -141,10 +223,14 @@ def auth_only() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Daily Digest Bot")
+    parser = argparse.ArgumentParser(description="Daily & Weekly Digest Bot")
     parser.add_argument(
         "--test", action="store_true",
         help="Dry run: print summary to console without sending email"
+    )
+    parser.add_argument(
+        "--weekly", action="store_true",
+        help="Run the weekly Friday wrap-up instead of the daily digest"
     )
     parser.add_argument(
         "--auth", action="store_true",
@@ -154,6 +240,8 @@ def main() -> None:
 
     if args.auth:
         auth_only()
+    elif args.weekly:
+        run_weekly(dry_run=args.test)
     else:
         run(dry_run=args.test)
 
