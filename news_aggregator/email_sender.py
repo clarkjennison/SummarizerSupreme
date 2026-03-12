@@ -5,10 +5,15 @@ and sends it via the Gmail API.
 """
 
 import base64
+import mimetypes
+import os
 import re
 from datetime import datetime
+from email.mime.application import MIMEApplication
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import List, Optional
 
 import pytz
 
@@ -29,26 +34,42 @@ def send_news_email(
     digest_md:  str,
     source_counts: dict,
     timezone_str: str = "America/New_York",
+    attachments: Optional[List[str]] = None,
 ) -> None:
-    """Build and send the healthcare VC news digest email."""
+    """Build and send the healthcare VC news digest email.
+
+    Args:
+        attachments: Optional list of file paths to attach to the email.
+    """
     tz    = pytz.timezone(timezone_str)
     today = datetime.now(tz).strftime("%A, %B %d, %Y")
 
-    subject  = f"Healthcare VC Daily — {today}"
+    subject   = f"Healthcare VC Daily — {today}"
     html_body = _render_html(digest_md, today, source_counts)
     text_body = digest_md
 
-    msg = MIMEMultipart("alternative")
+    if attachments:
+        # mixed → alternative (text+html) + file parts
+        msg = MIMEMultipart("mixed")
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(text_body, "plain", "utf-8"))
+        alt.attach(MIMEText(html_body, "html",  "utf-8"))
+        msg.attach(alt)
+        for path in attachments:
+            msg.attach(_build_attachment(path))
+    else:
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html",  "utf-8"))
+
     msg["Subject"] = subject
     msg["From"]    = from_email
     msg["To"]      = to_email
 
-    msg.attach(MIMEText(text_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html",  "utf-8"))
-
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
     service.users().messages().send(userId="me", body={"raw": raw}).execute()
-    print(f"  News digest sent -> {to_email}")
+    attach_note = f" with {len(attachments)} attachment(s)" if attachments else ""
+    print(f"  News digest sent -> {to_email}{attach_note}")
 
 
 # ---------------------------------------------------------------------------
@@ -240,3 +261,35 @@ def _inline_md(text: str) -> str:
         text,
     )
     return text
+
+
+# ---------------------------------------------------------------------------
+# Attachment helper
+# ---------------------------------------------------------------------------
+
+def _build_attachment(file_path: str) -> MIMEBase:
+    """Read a file from disk and return a MIME part ready to attach."""
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+    main_type, sub_type = mime_type.split("/", 1)
+
+    with open(file_path, "rb") as f:
+        data = f.read()
+
+    if main_type == "application":
+        part = MIMEApplication(data, Name=os.path.basename(file_path))
+    else:
+        part = MIMEBase(main_type, sub_type)
+        part.set_payload(data)
+
+    part.add_header(
+        "Content-Disposition",
+        "attachment",
+        filename=os.path.basename(file_path),
+    )
+    if main_type != "application":
+        import email.encoders
+        email.encoders.encode_base64(part)
+
+    return part
